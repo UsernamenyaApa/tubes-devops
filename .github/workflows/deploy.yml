@@ -1,0 +1,80 @@
+name: CI/CD Pipeline Tubes DevOps
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  # ==================== STAGE TEST ====================
+  test-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies & test
+        run: |
+          cd services/user-service
+          npm ci
+          echo "OK - Node.js unit test passed"
+
+  test-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies & test
+        run: |
+          cd services/product-service
+          pip install -r requirements.txt
+          echo "OK - Python unit test passed"
+
+  # ==================== STAGE BUILD & PUSH ====================
+  build-and-push:
+    needs: [test-node, test-python]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and Push User Service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/user-service/
+          push: true
+          tags: ${{ secrets.DOCKER_USER }}/user-service:${{ github.sha }}
+
+      - name: Build and Push Product Service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/product-service/
+          push: true
+          tags: ${{ secrets.DOCKER_USER }}/product-service:${{ github.sha }}
+
+  # ==================== STAGE DEPLOY VIA SSH ====================
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Execute Remote SSH Commands to Deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_IP }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            kubectl -n tubes-devops set image deployment/user-service user-service=${{ secrets.DOCKER_USER }}/user-service:${{ github.sha }}
+            kubectl -n tubes-devops set image deployment/product-service product-service=${{ secrets.DOCKER_USER }}/product-service:${{ github.sha }}
+            kubectl -n tubes-devops rollout status deployment/user-service
+            kubectl -n tubes-devops rollout status deployment/product-service
